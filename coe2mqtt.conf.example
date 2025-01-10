@@ -1,0 +1,25 @@
+{
+    "mqtt_host": "localhost",
+    "mqtt_port": "1883",
+    "mqtt_keepalive": "30",
+    "mqtt_clientid": "coe2mqtt",
+    "mqtt_user": "coe2mqtt",
+    "mqtt_password": "t0p_s3cr3t",
+    "mqtt_topic": "bus/can",
+    "mqtt_tls": "false",
+    "mqtt_tls_version": "TLSv1.2",
+    "mqtt_verify_mode": "CERT_NONE",
+    "mqtt_ssl_ca_path": "/etc/ssl/myca.pem",
+    "mqtt_tls_no_verify": "false",
+    "coe_version": "2",
+    "coe_bind_ip": "10.0.0.11",
+    "coe_bind_port": "5441",
+    "coe_peer_ip": "10.0.7.12",
+    "coe_peer_port": "5441",
+    "verbose": "false",
+    "mqtt_subscribe": {
+        "node2/analog1": "CELSIUS",
+        "node22/digital10": "NONE",
+        "node10/analog3": "LITERSH"
+    }
+}

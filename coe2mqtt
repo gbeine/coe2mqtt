@@ -1,0 +1,283 @@
+#!/usr/bin/env python
+
+import argparse
+import can
+import json
+import logging
+import os
+import re
+import ssl
+import time
+
+import paho.mqtt.client as mqtt
+
+from coe import CoEType, CoEVersion, Message, messagebuilder
+from ipaddress import IPv4Address
+
+logger = logging.getLogger(__name__)
+
+verify_mode = {
+    'CERT_NONE': ssl.CERT_NONE,
+    'CERT_OPTIONAL': ssl.CERT_OPTIONAL,
+    'CERT_REQUIRED': ssl.CERT_REQUIRED
+}
+
+tls_versions = {
+    'TLSv1': ssl.PROTOCOL_TLSv1,
+    'TLSv1.1': ssl.PROTOCOL_TLSv1_1,
+    'TLSv1.2': ssl.PROTOCOL_TLSv1_2
+}
+
+
+can_bus = None
+can_types = None
+mqtt_client = None
+daemon_args = None
+
+
+def publish_to_mqtt(message: Message):
+    global mqtt_client, daemon_args
+
+    if message.is_digital:
+        topic = "{}/node{}/digital{}"
+    else:
+        topic = "{}/node{}/analog{}"
+    topic = topic.format(daemon_args.mqtt_topic, message.node, message.address)
+
+    value = int(message.value)
+
+    logging.debug("Topic: {}, Payload: {}".format(topic, value))
+    mqtt_client.publish(topic, str(value))
+
+    if daemon_args.timestamp:
+        mqtt_client.publish("{}/timestamp".format(topic), time.time(), retain=True)
+
+
+def on_mqtt_connect(client, userdata, flags, reason_code, properties):
+    global daemon_args, can_types
+
+    can_types = {}
+    for address in daemon_args.mqtt_subscribe:
+        topic = "{}/{}".format(daemon_args.mqtt_topic, address)
+        logging.info("Subscribe: {}".format(topic))
+        client.subscribe(topic)
+        can_types[topic] = daemon_args.mqtt_subscribe[address]
+
+
+def on_mqtt_received(client, userdata, message):
+    global daemon_args
+
+    pn = re.compile(".*/node(\\d+)/.*")
+    rn = pn.search(message.topic)
+    if not rn:
+        logger.debug("Topic {} contains no node id.".format(message.topic))
+        return
+    node = rn.group(1)
+
+    pa = re.compile(".*/analog(\\d+)")
+    ra = pa.search(message.topic)
+    pd = re.compile(".*/digital(\\d+)")
+    rd = pd.search(message.topic)
+    if not ra and not rd:
+        logger.debug("Topic {} contains no analog or digital address.".format(message.topic))
+        return
+
+    payload = str(message.payload.decode())
+
+    if rd:
+        address = rd.group(1)
+        logger.debug("Received digital message for node {}, address {}".format(node, address))
+        message = Message(int(node), int(address), bool(payload))
+    else:
+        address = ra.group(1)
+        can_type = can_types[message.topic]
+        logger.debug("Received analog message for node {}, address {}".format(node, address))
+        message = Message(int(node), int(address), int(payload), CoEType[can_type])
+
+    data = messagebuilder.to_can(CoEVersion.V2, [message])
+
+    can_bus.send(data)
+
+
+def init_mqtt():
+    logging.debug('Starting MQTT')
+    global daemon_args
+    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, daemon_args.mqtt_clientid)
+    if daemon_args.mqtt_tls:
+        cert_reqs = verify_mode[daemon_args.mqtt_verify_mode] if daemon_args.mqtt_verify_mode in verify_mode else None
+        tls_version = tls_versions[daemon_args.mqtt_tls_version] if daemon_args.mqtt_tls_version in tls_versions else None
+        if 'mqtt_ssl_ca_path' in daemon_args:
+            mqtt_client.tls_set(daemon_args.mqtt_ssl_ca_path)#, cert_reqs=cert_reqs, tls_version=tls_version)
+        elif cert_reqs is not None and tls_version is not None:
+            mqtt_client.tls_set(cert_reqs=cert_reqs, tls_version=tls_version)
+        else:
+            logging.error("Invalid TLS configuration.")
+            exit(255)
+        mqtt_client.tls_insecure_set(daemon_args.mqtt_tls_no_verify)
+    if daemon_args.verbose:
+        mqtt_client.enable_logger()
+    if daemon_args.mqtt_user is not None and daemon_args.mqtt_password is not None:
+        mqtt_client.username_pw_set(daemon_args.mqtt_user, daemon_args.mqtt_password)
+    mqtt_client.on_connect = on_mqtt_connect
+    mqtt_client.on_message = on_mqtt_received
+    mqtt_client.connect(daemon_args.mqtt_host, daemon_args.mqtt_port, daemon_args.mqtt_keepalive)
+    return mqtt_client
+
+
+def start_coe():
+    global daemon_args, can_bus
+
+    can_bus = can.Bus(
+            interface="coe",
+            channel=CoEVersion.V2,
+            local=IPv4Address(daemon_args.coe_bind_ip),
+            local_port=daemon_args.coe_bind_port,
+            peer=IPv4Address(daemon_args.coe_peer_ip),
+            peer_port=daemon_args.coe_peer_port
+    )
+
+    logger.info("Listening for UDP packets on {}:{}".format(daemon_args.coe_bind_ip, daemon_args.coe_bind_port))
+
+    while True:
+        busmsg = can_bus.recv(timeout=600)
+        for m in messagebuilder.from_can(busmsg):
+            publish_to_mqtt(m)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+            prog='coe2mqtt',
+            description='A CAN over Ethernet to MQTT bridge',
+            epilog='Have a lot of fun!')
+    parser.add_argument('-m', '--mqtt_host', type=str,
+            default='localhost',
+            help='The hostname of the MQTT server. Default is localhost')
+    parser.add_argument('--mqtt_port', type=int,
+            default=1883,
+            help='The port of the MQTT server. Default is 1883')
+    parser.add_argument('--mqtt_keepalive', type=int,
+            default=30,
+            help='The keep alive interval for the MQTT server connection in seconds. Default is 30')
+    parser.add_argument('--mqtt_clientid', type=str,
+            default='coe2mqtt',
+            help='The clientid to send to the MQTT server. Default is coe2mqtt')
+    parser.add_argument('-u', '--mqtt_user', type=str,
+            help='The username for the MQTT server connection.')
+    parser.add_argument('-p', '--mqtt_password', type=str,
+            help='The password for the MQTT server connection.')
+    parser.add_argument('-t', '--mqtt_topic', type=str,
+            default='bus/can',
+            help='The topic to publish MQTT message. Default is bus/can')
+    parser.add_argument('--mqtt_tls',
+            default=False,
+            action='store_true',
+            help='Use SSL/TLS encryption for MQTT connection.')
+    parser.add_argument('--mqtt_tls_version', type=str,
+            default='TLSv1.2',
+            help='The TLS version to use for MQTT. One of TLSv1, TLSv1.1, TLSv1.2. Default is TLSv1.2')
+    parser.add_argument('--mqtt_verify_mode', type=str,
+            default='CERT_REQUIRED',
+            help='The SSL certificate verification mode. One of CERT_NONE, CERT_OPTIONAL, CERT_REQUIRED. Default is CERT_REQUIRED')
+    parser.add_argument('--mqtt_ssl_ca_path', type=str,
+            help='The SSL certificate authority file to verify the MQTT server.')
+    parser.add_argument('--mqtt_tls_no_verify',
+            default=False,
+            action='store_true',
+            help='Do not verify SSL/TLS constraints like hostname.')
+    parser.add_argument('--coe_version', type=int,
+            default=2,
+            help='The CoE version to use (1 or 2). Default is 2')
+    parser.add_argument('--coe_bind_ip', type=str,
+            default='localhost',
+            help='The IP address to listen on. Default is 127.0.0.1')
+    parser.add_argument('--coe_bind_port', type=int,
+            default=5442,
+            help='The port to listen on. Default is 5442')
+    parser.add_argument('--coe_peer_ip', type=str,
+            help='The peer IP address to send CoE messages to.')
+    parser.add_argument('--coe_peer_port', type=int,
+            default=5442,
+            help='The peer port to send CoE messages to. Default is 5442')
+    parser.add_argument('-c', '--config', type=str,
+            default='./coe2mqtt.conf',
+            help='The path to the config file. Default is /etc/coe2mqtt.conf')
+    parser.add_argument('-z', '--timestamp',
+            default=False,
+            action='store_true',
+            help='Publish timestamps for all topics, e.g. for monitoring purposes.')
+    parser.add_argument('-v', '--verbose',
+            default=False,
+            action='store_true',
+            help='Be verbose while running.')
+    args = parser.parse_args()
+    return args
+
+
+def parse_config():
+    global daemon_args
+
+    if not os.path.isfile(daemon_args.config):
+        return
+
+    with open(daemon_args.config, "r") as config_file:
+        data = json.load(config_file)
+        if 'mqtt_host' in data:
+            daemon_args.mqtt_host = data['mqtt_host']
+        if 'mqtt_port' in data:
+            daemon_args.mqtt_port = int(data['mqtt_port'])
+        if 'mqtt_keepalive' in data:
+            daemon_args.mqtt_keepalive = int(data['mqtt_keepalive'])
+        if 'mqtt_clientid' in data:
+            daemon_args.mqtt_clientid = data['mqtt_clientid']
+        if 'mqtt_user' in data:
+            daemon_args.mqtt_user = data['mqtt_user']
+        if 'mqtt_password' in data:
+            daemon_args.mqtt_password = data['mqtt_password']
+        if 'mqtt_topic' in data:
+            daemon_args.mqtt_topic = data['mqtt_topic']
+        if 'mqtt_tls' in data:
+            daemon_args.mqtt_tls = data['mqtt_tls'].lower() == 'true'
+        if 'mqtt_tls_version' in data:
+            daemon_args.mqtt_tls_version = data['mqtt_tls_version']
+        if 'mqtt_verify_mode' in data:
+            daemon_args.mqtt_verify_mode = data['mqtt_verify_mode']
+        if 'mqtt_ssl_ca_path' in data:
+            daemon_args.mqtt_ssl_ca_path = data['mqtt_ssl_ca_path']
+        if 'mqtt_tls_no_verify' in data:
+            daemon_args.mqtt_tls_no_verify = data['mqtt_tls_no_verify'].lower() == 'true'
+        if 'coe_version' in data:
+            daemon_args.coe_version = data['coe_version']
+        if 'coe_bind_ip' in data:
+            daemon_args.coe_bind_ip = data['coe_bind_ip']
+        if 'coe_bind_port' in data:
+            daemon_args.coe_bind_port = int(data['coe_bind_port'])
+        if 'coe_peer_ip' in data:
+            daemon_args.coe_peer_ip = data['coe_peer_ip']
+        if 'coe_peer_port' in data:
+            daemon_args.coe_peer_port = int(data['coe_peer_port'])
+        if 'timestamp' in data:
+            daemon_args.timestamp = data['timestamp'].lower() == 'true'
+        if 'verbose' in data:
+            daemon_args.verbose = data['verbose'].lower() == 'true'
+        if 'mqtt_subscribe' in data:
+            daemon_args.mqtt_subscribe = data['mqtt_subscribe']
+        else:
+            daemon_args.mqtt_subscribe = []
+
+
+def main():
+    global daemon_args, mqtt_client
+    daemon_args = parse_args()
+    parse_config()
+    # Verbosity
+    if daemon_args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    # MQTT connection
+    mqtt_client = init_mqtt()
+    mqtt_client.loop_start()
+    # CoE listener
+    start_coe()
+
+
+if __name__ == "__main__":
+    main()
