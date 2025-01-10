@@ -1,5 +1,10 @@
 FROM python:3.12-alpine as builder
 
+RUN set -eux; \
+        apk add --no-cache \
+                gcc \
+                libc-dev
+
 WORKDIR /app
 
 COPY requirements.txt ./
