@@ -55,10 +55,10 @@ The list (in order of the CoEType enum in [coe](https://c0d3.sh/smarthome/python
 
 - CELSIUS, temperature in degree Celsius
 - WATTSM2, watts per square meter
-- LITERSH, liters per hour
+- LITERSH, litres per hour
 - SECONDS 
 - MINUTES 
-- LITERSP, liters per pulse
+- LITERSP, litres per pulse
 - KELVIN, temperature in degree Kelvin
 - PERCENT 
 - KILOWATT 
@@ -70,18 +70,21 @@ The list (in order of the CoEType enum in [coe](https://c0d3.sh/smarthome/python
 - DAYS
 - PULSES
 - KILOOHM
-- KMH, kilometers per hour
+- KMH, kilometres per hour
 - HERTZ
-- LITERSM, liters per minute
+- LITERSM, litres per minute
 - BAR
+- W, Watt
+- PPM, parts per million
+- ONOFF, digital
 
-For digital addresses, use always "NONE" as a placeholder.
+For digital addresses, use always "ONOFF" as a placeholder.
 
 ```
     ...
     "mqtt_subscribe": {
         "node2/analog1": "CELSIUS",
-        "node22/digital10": "NONE",
+        "node22/digital10": "ONOFF",
         "node10/analog3": "LITERSH",
         ...
     }

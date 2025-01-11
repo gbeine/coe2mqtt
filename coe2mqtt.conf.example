@@ -19,7 +19,7 @@
     "verbose": "false",
     "mqtt_subscribe": {
         "node2/analog1": "CELSIUS",
-        "node22/digital10": "NONE",
+        "node22/digital10": "ONOFF",
         "node10/analog3": "LITERSH"
     }
 }
