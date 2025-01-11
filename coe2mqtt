@@ -199,7 +199,7 @@ def parse_args():
             default=5442,
             help='The peer port to send CoE messages to. Default is 5442')
     parser.add_argument('-c', '--config', type=str,
-            default='./coe2mqtt.conf',
+            default='/etc/coe2mqtt.conf',
             help='The path to the config file. Default is /etc/coe2mqtt.conf')
     parser.add_argument('-z', '--timestamp',
             default=False,
