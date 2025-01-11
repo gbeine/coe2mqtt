@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import signal
 import ssl
 import time
 
@@ -100,7 +101,7 @@ def on_mqtt_received(client, userdata, message):
 
 
 def init_mqtt():
-    logging.debug('Starting MQTT')
+    logging.info('Starting MQTT')
     global daemon_args
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, daemon_args.mqtt_clientid)
     if daemon_args.mqtt_tls:
@@ -126,6 +127,7 @@ def init_mqtt():
 
 def start_coe():
     global daemon_args, can_bus
+    logging.info('Starting CoE')
 
     can_bus = can.Bus(
             interface="coe",
@@ -265,16 +267,37 @@ def parse_config():
             daemon_args.mqtt_subscribe = []
 
 
+def shutdown(signum, frame):
+    global can_bus, mqtt_client
+    logging.info('Shutdown...')
+    if mqtt_client is not None:
+        logging.info('Stopping MQTT')
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
+    if can_bus is not None:
+        logging.info('Stopping CoE')
+        can_bus.shutdown()
+    logging.info('Bye!')
+    exit(0)
+
+
 def main():
     global daemon_args, mqtt_client
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
     daemon_args = parse_args()
     parse_config()
+
     # Verbosity
     if daemon_args.verbose:
         logging.basicConfig(level=logging.DEBUG)
+
     # MQTT connection
     mqtt_client = init_mqtt()
     mqtt_client.loop_start()
+
     # CoE listener
     start_coe()
 
