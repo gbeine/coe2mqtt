@@ -1,3 +1,4 @@
 # Python requirements
 paho-mqtt
 python-can
+python-can-coe
