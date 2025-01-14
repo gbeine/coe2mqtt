@@ -9,8 +9,6 @@ WORKDIR /app
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY 'python_can_coe-0.0.0-py3-none-any.whl' ./
-RUN pip install python_can_coe-0.0.0-py3-none-any.whl
 
 FROM python:3.12-alpine
 
